@@ -4,7 +4,7 @@ This repository contains VanillaCore and the benchmarks you might need for the f
 
 ## Goal
 
-This final project tests whether you are capable to realize a research work on a DBMS.
+This final project tests whether you are capable of realizing a research work on a DBMS.
 
 ## Constraints
 
