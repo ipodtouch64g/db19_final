@@ -1,0 +1,8 @@
+.metadata/
+.settings/
+.recommenders
+target/
+
+# Eclipse project
+.classpath
+.project
