@@ -122,8 +122,8 @@ class BufferPoolMgr {
 
 			// If there is no such buffer
 			if (buff == null) {
-				while(unpinnedLinkedList.isEmpty())
-					;
+				if(unpinnedLinkedList.isEmpty())
+					return null;
 				buff = unpinnedLinkedList.poll();
 				if (buff.getExternalLock().tryLock()) {
 					try {
@@ -186,8 +186,8 @@ class BufferPoolMgr {
 		synchronized (prepareAnchor(fileName)) {
 			Buffer buff;
 			// Choose Unpinned Buffer
-			while(unpinnedLinkedList.isEmpty())
-				;
+			if(unpinnedLinkedList.isEmpty())
+				return null;
 			buff = unpinnedLinkedList.poll();
 			if (buff.getExternalLock().tryLock()) {
 					try {
