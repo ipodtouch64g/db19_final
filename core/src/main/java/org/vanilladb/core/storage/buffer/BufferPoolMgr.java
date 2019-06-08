@@ -31,7 +31,6 @@ import org.vanilladb.core.storage.file.FileMgr;
 class BufferPoolMgr {
 	private Buffer[] bufferPool;
 	private Map<BlockId, Buffer> blockMap;
-	private volatile int lastReplacedBuff;
 	private AtomicInteger numAvailable;
 	private Queue<Buffer> unpinnedLinkedList;
 	// Optimization: Lock striping
@@ -52,7 +51,6 @@ class BufferPoolMgr {
 		bufferPool = new Buffer[numBuffs];
 		blockMap = new ConcurrentHashMap<BlockId, Buffer>();
 		numAvailable = new AtomicInteger(numBuffs);
-		lastReplacedBuff = 0;
 		unpinnedLinkedList = new ConcurrentLinkedQueue<Buffer>();
 		
 		for (int i = 0; i < numBuffs; i++)
@@ -60,6 +58,11 @@ class BufferPoolMgr {
 
 		for (int i = 0; i < anchors.length; ++i) {
 			anchors[i] = new Object();
+		}
+		// add all buffers to unpinnedLinkedList
+		for(int i = 0; i < numBuffs; i++)
+		{
+			unpinnedLinkedList.add(bufferPool[i]);
 		}
 	}
 
@@ -122,9 +125,12 @@ class BufferPoolMgr {
 
 			// If there is no such buffer
 			if (buff == null) {
-				if(unpinnedLinkedList.isEmpty())
-					return null;
-				buff = unpinnedLinkedList.poll();
+				synchronized(unpinnedLinkedList)
+				{
+					if(unpinnedLinkedList.isEmpty())
+						return null;
+					buff = unpinnedLinkedList.poll();
+				}
 				if (buff.getExternalLock().tryLock()) {
 					try {
 							// Swap
@@ -145,8 +151,8 @@ class BufferPoolMgr {
 						buff.getExternalLock().unlock();
 					}
 				}
-				else
-					return null;
+			else
+				return null;
 			// If it exists
 			} else {
 				// Get the lock of buffer
@@ -156,7 +162,12 @@ class BufferPoolMgr {
 					// Check its block id before pinning since it might be swapped
 					if (buff.block().equals(blk)) {
 						if (!buff.isPinned())
+						{
 							numAvailable.decrementAndGet();
+							// This might be an issue because the worst case is O(n) time.
+							unpinnedLinkedList.remove(buff);
+						}
+						
 						buff.pin();
 						return buff;
 					}
@@ -186,31 +197,34 @@ class BufferPoolMgr {
 		synchronized (prepareAnchor(fileName)) {
 			Buffer buff;
 			// Choose Unpinned Buffer
-			if(unpinnedLinkedList.isEmpty())
-				return null;
-			buff = unpinnedLinkedList.poll();
+			synchronized(unpinnedLinkedList)
+			{
+				if(unpinnedLinkedList.isEmpty())
+					return null;
+				buff = unpinnedLinkedList.poll();
+			}
 			if (buff.getExternalLock().tryLock()) {
-					try {
-						// Swap
-						BlockId oldBlk = buff.block();
-						if (oldBlk != null)
-							blockMap.remove(oldBlk);
-						buff.assignToNew(fileName, fmtr);
-						blockMap.put(buff.block(), buff);
-						if (!buff.isPinned())
-							numAvailable.decrementAndGet();
-						
-						// Pin this buffer
-						buff.pin();
-						return buff;
-					} finally {
-						// Release the lock of buffer
-						buff.getExternalLock().unlock();
-					}
+				try {
+					// Swap
+					BlockId oldBlk = buff.block();
+					if (oldBlk != null)
+						blockMap.remove(oldBlk);
+					buff.assignToNew(fileName, fmtr);
+					blockMap.put(buff.block(), buff);
+					if (!buff.isPinned())
+						numAvailable.decrementAndGet();
+					
+					// Pin this buffer
+					buff.pin();
+					return buff;
+				} finally {
+					// Release the lock of buffer
+					buff.getExternalLock().unlock();
 				}
+			}
 			else
 				return null;
-		}
+		}	
 	}
 
 	/**
@@ -225,9 +239,11 @@ class BufferPoolMgr {
 				// Get the lock of buffer
 				buff.getExternalLock().lock();
 				buff.unpin();
-				unpinnedLinkedList.add(buff);
 				if (!buff.isPinned())
+				{
 					numAvailable.incrementAndGet();
+					unpinnedLinkedList.add(buff);
+				}
 			} finally {
 				// Release the lock of buffer
 				buff.getExternalLock().unlock();
