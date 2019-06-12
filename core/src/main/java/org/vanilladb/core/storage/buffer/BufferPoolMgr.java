@@ -158,6 +158,11 @@ class BufferPoolMgr {
 						
 						// Pin this buffer
 						buff.pin();
+						
+						// Check if this blockId is new
+						if(blk.hist[BlockId.LRU_K-1]==0)
+							blk.updateHistM();
+						
 						return buff;
 						
 					} finally {
@@ -232,6 +237,7 @@ class BufferPoolMgr {
 						
 						// Pin this buffer
 						buff.pin();
+						buff.blk.updateHistM();
 						return buff;
 					} finally {
 						// Release the lock of buffer

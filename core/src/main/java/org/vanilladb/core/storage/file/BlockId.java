@@ -68,7 +68,18 @@ public class BlockId implements Comparable<BlockId> {
 		return hist[LRU_K-1];
 	}	
 	
-	// Reference this page.
+	// Reference this BlockId (When cache misses)
+	public void updateHistM() 
+	{
+		long nowTime = System.nanoTime();
+		for(int i=1;i<LRU_K;i++)
+			hist[i] = hist[i-1];
+		last_reference_time = nowTime;
+		hist[0] = nowTime;
+	}
+	
+	
+	// Reference this BlockId (When cache hits)
 	public void updateHist() 
 	{
 		long nowTime = System.nanoTime();
