@@ -15,6 +15,7 @@
  *******************************************************************************/
 package org.vanilladb.core.storage.buffer;
 
+import java.sql.Timestamp;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.locks.Lock;
@@ -48,9 +49,9 @@ public class Buffer {
 	private static final int LAST_LSN_OFFSET = 0;
 	private static final int DATA_START_OFFSET = LogSeqNum.SIZE;
 	
-	private Page contents = new Page();
-	private BlockId blk = null;
-	private int pins = 0;
+	public Page contents = new Page();
+	public BlockId blk = null;
+	public int pins = 0;
 	private boolean isNew = false;
 	private Set<Long> modifiedBy = new HashSet<Long>();
 	// TODO: We use (-1, -1) for the default value. Will this be a problem ?
@@ -226,6 +227,7 @@ public class Buffer {
 		internalLock.writeLock().lock();
 		try {
 			pins++;
+			
 		} finally {
 			internalLock.writeLock().unlock();
 		}

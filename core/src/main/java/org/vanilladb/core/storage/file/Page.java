@@ -16,6 +16,9 @@
 package org.vanilladb.core.storage.file;
 
 import java.nio.BufferOverflowException;
+import java.sql.Timestamp;
+import java.util.LinkedList;
+import java.util.Queue;
 
 import org.vanilladb.core.server.VanillaDb;
 import org.vanilladb.core.sql.Constant;
@@ -64,7 +67,9 @@ public class Page {
 	static {
 		BLOCK_SIZE = CoreProperties.getLoader().getPropertyAsInteger(Page.class.getName() + ".BLOCK_SIZE", 4096);
 	}
-
+	
+	
+	
 	/**
 	 * Calculates the maximum number of bytes required to store a value of a
 	 * particular {@link Type type} in disk.
@@ -101,6 +106,7 @@ public class Page {
 	 * or {@link VanillaDb#initFileAndLogMgr(String)} is called first.
 	 */
 	public Page() {
+		
 	}
 
 	/**

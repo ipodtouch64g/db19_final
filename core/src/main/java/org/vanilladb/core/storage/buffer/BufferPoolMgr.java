@@ -15,13 +15,16 @@
  *******************************************************************************/
 package org.vanilladb.core.storage.buffer;
 
+import java.util.Comparator;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.vanilladb.core.server.VanillaDb;
 import org.vanilladb.core.storage.file.BlockId;
 import org.vanilladb.core.storage.file.FileMgr;
+import org.vanilladb.core.storage.file.Page;
 
 /**
  * Manages the pinning and unpinning of buffers to blocks.
@@ -29,12 +32,11 @@ import org.vanilladb.core.storage.file.FileMgr;
 class BufferPoolMgr {
 	private Buffer[] bufferPool;
 	private Map<BlockId, Buffer> blockMap;
-	private volatile int lastReplacedBuff;
 	private AtomicInteger numAvailable;
-
+	private PriorityQueue<Buffer> unpinnedHeap;
 	// Optimization: Lock striping
 	private Object[] anchors = new Object[1009];
-
+	
 	/**
 	 * Creates a buffer manager having the specified number of buffer slots.
 	 * This constructor depends on both the {@link FileMgr} and
@@ -49,14 +51,32 @@ class BufferPoolMgr {
 	BufferPoolMgr(int numBuffs) {
 		bufferPool = new Buffer[numBuffs];
 		blockMap = new ConcurrentHashMap<BlockId, Buffer>();
-		numAvailable = new AtomicInteger(numBuffs);
-		lastReplacedBuff = 0;
+		numAvailable = new AtomicInteger(numBuffs);		
+		// smaller time_stamp should be on top of the heap. 
+		Comparator<Buffer> heapComparator = (b1, b2) -> {
+			// check if blk is null (will happen at the beginning)
+			if(b1.blk == null)
+				return -1;
+			if(b2.blk == null)
+				return 1;
+			return (int)(b1.blk.order()-b2.blk.order());
+	    };
+
+		unpinnedHeap = new PriorityQueue<>(numBuffs,heapComparator);
+		
 		for (int i = 0; i < numBuffs; i++)
 			bufferPool[i] = new Buffer();
 
 		for (int i = 0; i < anchors.length; ++i) {
 			anchors[i] = new Object();
 		}
+		
+		// add all Blocks(Pages) into queue first.
+		for(int i=0;i<numBuffs;i++)
+		{
+			unpinnedHeap.add(bufferPool[i]);
+		}
+				
 	}
 
 	// Optimization: Lock striping
@@ -118,53 +138,52 @@ class BufferPoolMgr {
 
 			// If there is no such buffer
 			if (buff == null) {
-
-				// Choose Unpinned Buffer
-				int lastReplacedBuff = this.lastReplacedBuff;
-				int currBlk = (lastReplacedBuff + 1) % bufferPool.length;
-				while (currBlk != lastReplacedBuff) {
-					buff = bufferPool[currBlk];
-					
-					// Get the lock of buffer if it is free
-					if (buff.getExternalLock().tryLock()) {
-						try {
-							// Check if there is no one use it
-							if (!buff.isPinned()) {
-								this.lastReplacedBuff = currBlk;
-								
-								// Swap
-								BlockId oldBlk = buff.block();
-								if (oldBlk != null)
-									blockMap.remove(oldBlk);
-								buff.assignToBlock(blk);
-								blockMap.put(blk, buff);
-								if (!buff.isPinned())
-									numAvailable.decrementAndGet();
-								
-								// Pin this buffer
-								buff.pin();
-								return buff;
-							}
-						} finally {
-							// Release the lock of buffer
-							buff.getExternalLock().unlock();
-						}
+				synchronized(unpinnedHeap)
+				{
+					if(unpinnedHeap.isEmpty())
+						return null;
+					buff = unpinnedHeap.poll();
+				}
+				// Get the lock of buffer if it is free
+				if (buff.getExternalLock().tryLock()) {
+					try {
+						// Swap
+						BlockId oldBlk = buff.block();
+						if (oldBlk != null)
+							blockMap.remove(oldBlk);
+						buff.assignToBlock(blk);
+						blockMap.put(blk, buff);
+						if (!buff.isPinned())
+							numAvailable.decrementAndGet();
+						
+						// Pin this buffer
+						buff.pin();
+						return buff;
+						
+					} finally {
+						// Release the lock of buffer
+						buff.getExternalLock().unlock();
 					}
-					currBlk = (currBlk + 1) % bufferPool.length;
 				}
 				return null;
-				
+			}
 			// If it exists
-			} else {
+			else {
 				// Get the lock of buffer
 				buff.getExternalLock().lock();
 				
 				try {
 					// Check its block id before pinning since it might be swapped
 					if (buff.block().equals(blk)) {
-						if (!buff.isPinned())
+						if (!buff.isPinned()) {
 							numAvailable.decrementAndGet();
+							synchronized(unpinnedHeap)
+							{
+								unpinnedHeap.remove(buff);
+							}
+						}
 						buff.pin();
+						buff.blk.updateHist();
 						return buff;
 					}
 					return pin(blk);
@@ -191,42 +210,38 @@ class BufferPoolMgr {
 	Buffer pinNew(String fileName, PageFormatter fmtr) {
 		// Only the txs acquiring to append the block on the same file will be blocked
 		synchronized (prepareAnchor(fileName)) {
-			
+			Buffer buff;
 			// Choose Unpinned Buffer
-			int lastReplacedBuff = this.lastReplacedBuff;
-			int currBlk = (lastReplacedBuff + 1) % bufferPool.length;
-			while (currBlk != lastReplacedBuff) {
-				Buffer buff = bufferPool[currBlk];
-				
+			synchronized(unpinnedHeap)
+			{
+				if(unpinnedHeap.isEmpty())
+					return null;
+				buff = unpinnedHeap.poll();
+			}
 				// Get the lock of buffer if it is free
 				if (buff.getExternalLock().tryLock()) {
 					try {
-						if (!buff.isPinned()) {
-							this.lastReplacedBuff = currBlk;
-							
-							// Swap
-							BlockId oldBlk = buff.block();
-							if (oldBlk != null)
-								blockMap.remove(oldBlk);
-							buff.assignToNew(fileName, fmtr);
-							blockMap.put(buff.block(), buff);
-							if (!buff.isPinned())
-								numAvailable.decrementAndGet();
-							
-							// Pin this buffer
-							buff.pin();
-							return buff;
-						}
+						// Swap
+						BlockId oldBlk = buff.block();
+						if (oldBlk != null)
+							blockMap.remove(oldBlk);
+						buff.assignToNew(fileName, fmtr);
+						blockMap.put(buff.block(), buff);
+						if (!buff.isPinned())
+							numAvailable.decrementAndGet();
+						
+						// Pin this buffer
+						buff.pin();
+						return buff;
 					} finally {
 						// Release the lock of buffer
 						buff.getExternalLock().unlock();
 					}
 				}
-				currBlk = (currBlk + 1) % bufferPool.length;
 			}
 			return null;
 		}
-	}
+
 
 	/**
 	 * Unpins the specified buffers.
@@ -241,7 +256,14 @@ class BufferPoolMgr {
 				buff.getExternalLock().lock();
 				buff.unpin();
 				if (!buff.isPinned())
+				{
 					numAvailable.incrementAndGet();
+					// If this buffer is not pinned, we put it into the heap.
+					synchronized(unpinnedHeap)
+					{
+						unpinnedHeap.add(buff);
+					}
+				}
 			} finally {
 				// Release the lock of buffer
 				buff.getExternalLock().unlock();

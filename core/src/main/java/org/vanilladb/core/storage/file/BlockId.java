@@ -15,6 +15,8 @@
  *******************************************************************************/
 package org.vanilladb.core.storage.file;
 
+import org.vanilladb.core.util.CoreProperties;
+
 /**
  * A reference to a disk block. A BlockId object consists of a fileName and a
  * block number. It does not hold the contents of the block; instead, that is
@@ -27,6 +29,60 @@ public class BlockId implements Comparable<BlockId> {
 	private String myString;
 	private int myHashCode;
 
+	// LRU-K
+	public static final int LRU_K;
+	static {
+		LRU_K = CoreProperties.getLoader().getPropertyAsInteger(Page.class.getName() + ".LRU_K", 2);
+	}
+	
+	// Correlated Reference Time
+	public static final int CRT;
+	static {
+		CRT = CoreProperties.getLoader().getPropertyAsInteger(Page.class.getName() + ".CRT", 100000);
+	}
+		
+	// Retain Info Time
+	public static final int RIT;
+	static {
+		RIT = CoreProperties.getLoader().getPropertyAsInteger(Page.class.getName() + ".RIT", 200000);
+	}		
+
+	
+	// LAST(p) in LRU_K algorithm.
+	public long last_reference_time;
+	
+	// HIST(p,...) in LRU_K algorithm.
+	public long[] hist = new long[LRU_K];
+	
+	// Reset HIST.
+	public void initHist()
+	{
+		hist[0] = System.nanoTime();
+		for(int i=1;i<LRU_K;i++)
+			hist[i] = 0;
+	}
+	
+	// Return the time of LRU_K.
+	public long order()
+	{
+		return hist[LRU_K-1];
+	}	
+	
+	// Reference this page.
+	public void updateHist() 
+	{
+		long nowTime = System.nanoTime();
+		// check if not in CRT
+		if(nowTime/1000000-last_reference_time/1000000>CRT)
+		{
+			long correl_period_of_refd_page = last_reference_time - hist[0];
+			for(int i=1;i<LRU_K;i++)
+				hist[i] = hist[i-1] + correl_period_of_refd_page;
+			hist[0] = nowTime;
+		}
+		last_reference_time = nowTime;
+	}
+	
 	/**
 	 * Constructs a block ID for the specified fileName and block number.
 	 * 
@@ -41,6 +97,8 @@ public class BlockId implements Comparable<BlockId> {
 		// Optimization: Materialize the hash code and the output of toString
 		myString = "[file " + fileName + ", block " + blkNum + "]";
 		myHashCode = myString.hashCode();
+		initHist();
+		last_reference_time = System.nanoTime();
 	}
 
 	/**

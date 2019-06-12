@@ -63,7 +63,7 @@ public class BufferConcurrencyTest {
 		} catch (InterruptedException | BrokenBarrierException e) {
 			e.printStackTrace();
 		}
-
+		System.out.println(buffer.pins);
 		// Check the results
 		Assert.assertEquals("testBufferPinCount failed", buffer.isPinned(), false);
 	}
