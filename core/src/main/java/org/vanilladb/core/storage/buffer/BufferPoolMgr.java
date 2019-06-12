@@ -33,10 +33,9 @@ class BufferPoolMgr {
 	private Buffer[] bufferPool;
 	private Map<BlockId, Buffer> blockMap;
 	private AtomicInteger numAvailable;
-	private PriorityQueue<Buffer> unpinnedHeap;
 	// Optimization: Lock striping
 	private Object[] anchors = new Object[1009];
-	
+	private int numBuffs;
 	/**
 	 * Creates a buffer manager having the specified number of buffer slots.
 	 * This constructor depends on both the {@link FileMgr} and
@@ -49,20 +48,10 @@ class BufferPoolMgr {
 	 *            the number of buffer slots to allocate
 	 */
 	BufferPoolMgr(int numBuffs) {
+		this.numBuffs = numBuffs;
 		bufferPool = new Buffer[numBuffs];
 		blockMap = new ConcurrentHashMap<BlockId, Buffer>();
 		numAvailable = new AtomicInteger(numBuffs);		
-		// smaller time_stamp should be on top of the heap. 
-		Comparator<Buffer> heapComparator = (b1, b2) -> {
-			// check if blk is null (will happen at the beginning)
-			if(b1.blk == null)
-				return -1;
-			if(b2.blk == null)
-				return 1;
-			return (int)(b1.blk.order()-b2.blk.order());
-	    };
-
-		unpinnedHeap = new PriorityQueue<>(numBuffs,heapComparator);
 		
 		for (int i = 0; i < numBuffs; i++)
 			bufferPool[i] = new Buffer();
@@ -71,11 +60,7 @@ class BufferPoolMgr {
 			anchors[i] = new Object();
 		}
 		
-		// add all Blocks(Pages) into queue first.
-		for(int i=0;i<numBuffs;i++)
-		{
-			unpinnedHeap.add(bufferPool[i]);
-		}
+		
 				
 	}
 
@@ -138,12 +123,31 @@ class BufferPoolMgr {
 
 			// If there is no such buffer
 			if (buff == null) {
-				synchronized(unpinnedHeap)
+				
+				// Try to find replaceable buffer
+				long nowTime = System.nanoTime();
+				long minTime = nowTime;
+
+				for(int i=0;i<numBuffs;i++)
 				{
-					if(unpinnedHeap.isEmpty())
-						return null;
-					buff = unpinnedHeap.poll();
+					if(!bufferPool[i].isPinned())
+					{
+						if(bufferPool[i].blk==null)
+						{
+							buff = bufferPool[i];
+							break;
+						}
+						if(nowTime-bufferPool[i].blk.last_reference_time>BlockId.CRT && bufferPool[i].blk.order()<minTime)
+						{
+							buff = bufferPool[i];
+							minTime = bufferPool[i].blk.order();
+						}
+					}
+					
 				}
+				if(buff==null)
+					return null;
+				
 				// Get the lock of buffer if it is free
 				if (buff.getExternalLock().tryLock()) {
 					try {
@@ -182,10 +186,6 @@ class BufferPoolMgr {
 					if (buff.block().equals(blk)) {
 						if (!buff.isPinned()) {
 							numAvailable.decrementAndGet();
-							synchronized(unpinnedHeap)
-							{
-								unpinnedHeap.remove(buff);
-							}
 						}
 						buff.pin();
 						buff.blk.updateHist();
@@ -215,14 +215,29 @@ class BufferPoolMgr {
 	Buffer pinNew(String fileName, PageFormatter fmtr) {
 		// Only the txs acquiring to append the block on the same file will be blocked
 		synchronized (prepareAnchor(fileName)) {
-			Buffer buff;
-			// Choose Unpinned Buffer
-			synchronized(unpinnedHeap)
+			Buffer buff=null;
+			// Try to find replaceable buffer
+			long nowTime = System.nanoTime();
+			long minTime = nowTime;
+
+			for(int i=0;i<numBuffs;i++)
 			{
-				if(unpinnedHeap.isEmpty())
-					return null;
-				buff = unpinnedHeap.poll();
+				if(!bufferPool[i].isPinned())
+				{
+					if(bufferPool[i].blk==null)
+					{
+						buff = bufferPool[i];
+						break;
+					}
+					if(nowTime-bufferPool[i].blk.last_reference_time>BlockId.CRT && bufferPool[i].blk.order()<minTime)
+					{
+						buff = bufferPool[i];
+						minTime = bufferPool[i].blk.order();
+					}
+				}
 			}
+			if(buff==null)
+				return null;
 				// Get the lock of buffer if it is free
 				if (buff.getExternalLock().tryLock()) {
 					try {
@@ -264,11 +279,6 @@ class BufferPoolMgr {
 				if (!buff.isPinned())
 				{
 					numAvailable.incrementAndGet();
-					// If this buffer is not pinned, we put it into the heap.
-					synchronized(unpinnedHeap)
-					{
-						unpinnedHeap.add(buff);
-					}
 				}
 			} finally {
 				// Release the lock of buffer
