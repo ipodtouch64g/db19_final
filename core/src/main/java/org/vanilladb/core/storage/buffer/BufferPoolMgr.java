@@ -15,6 +15,7 @@
  *******************************************************************************/
 package org.vanilladb.core.storage.buffer;
 
+import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,7 +52,7 @@ class BufferPoolMgr {
 		bufferPool = new Buffer[numBuffs];
 		blockMap = new ConcurrentHashMap<BlockId, Buffer>();
 		numAvailable = new AtomicInteger(numBuffs);
-		unpinnedLinkedList = new ConcurrentLinkedQueue<Buffer>();
+		unpinnedLinkedList = new LinkedList<Buffer>();
 		
 		for (int i = 0; i < numBuffs; i++)
 			bufferPool[i] = new Buffer();
@@ -165,7 +166,10 @@ class BufferPoolMgr {
 						{
 							numAvailable.decrementAndGet();
 							// This might be an issue because the worst case is O(n) time.
-							unpinnedLinkedList.remove(buff);
+							synchronized(unpinnedLinkedList)
+							{
+								unpinnedLinkedList.remove(buff);
+							}
 						}
 						
 						buff.pin();
