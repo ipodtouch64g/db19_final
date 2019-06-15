@@ -61,6 +61,8 @@ public class Buffer {
 	private final Lock externalLock = new ReentrantLock();
 	private final Lock flushLock = new ReentrantLock();
 	
+	// For LRU
+	public Buffer prev, next;
 	/**
 	 * Creates a new buffer, wrapping a new {@link Page page}. This constructor
 	 * is called exclusively by the class {@link BasicBufferMgr}. It depends on
