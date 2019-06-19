@@ -43,7 +43,7 @@ public class MicroTestbedLoaderProc extends BasicStoredProcedure<TestbedLoaderPa
 		
 		dropOldData();
 		createSchemas();
-
+		
 		// Generate item records
 		generateItems(1, paramHelper.getNumberOfItems());
 
@@ -60,6 +60,11 @@ public class MicroTestbedLoaderProc extends BasicStoredProcedure<TestbedLoaderPa
 		// Delete the log file and create a new one
 		VanillaDb.logMgr().removeAndCreateNewLog();
 
+		if (logger.isLoggable(Level.INFO))
+			logger.info("Loading procedure finished.");
+		
+		
+		
 		if (logger.isLoggable(Level.INFO))
 			logger.info("Loading procedure finished.");
 

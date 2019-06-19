@@ -15,16 +15,14 @@
  *******************************************************************************/
 package org.vanilladb.core.storage.buffer;
 
-import java.util.Comparator;
+
 import java.util.Map;
-import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.vanilladb.core.server.VanillaDb;
 import org.vanilladb.core.storage.file.BlockId;
 import org.vanilladb.core.storage.file.FileMgr;
-import org.vanilladb.core.storage.file.Page;
 
 /**
  * Manages the pinning and unpinning of buffers to blocks.
@@ -36,6 +34,7 @@ class BufferPoolMgr {
 	// Optimization: Lock striping
 	private Object[] anchors = new Object[1009];
 	private int numBuffs;
+	public int cacheHit = 1, cacheMiss = 1;
 	/**
 	 * Creates a buffer manager having the specified number of buffer slots.
 	 * This constructor depends on both the {@link FileMgr} and
@@ -58,10 +57,7 @@ class BufferPoolMgr {
 
 		for (int i = 0; i < anchors.length; ++i) {
 			anchors[i] = new Object();
-		}
-		
-		
-				
+		}			
 	}
 
 	// Optimization: Lock striping
@@ -76,12 +72,10 @@ class BufferPoolMgr {
 	 * Flushes all dirty buffers.
 	 */
 	void flushAll() {
-		for (Buffer buff : bufferPool) {
-			try {
-				buff.getExternalLock().lock();
-				buff.flush();
-			} finally {
-				buff.getExternalLock().unlock();
+		synchronized(bufferPool)
+		{
+			for (Buffer buff : bufferPool) {
+					buff.flush();
 			}
 		}
 	}
@@ -93,14 +87,12 @@ class BufferPoolMgr {
 	 *            the transaction's id number
 	 */
 	void flushAll(long txNum) {
-		for (Buffer buff : bufferPool) {
-			try {
-				buff.getExternalLock().lock();
+		synchronized(bufferPool)
+		{
+			for (Buffer buff : bufferPool) {
 				if (buff.isModifiedBy(txNum)) {
 					buff.flush();
 				}
-			} finally {
-				buff.getExternalLock().unlock();
 			}
 		}
 	}
@@ -116,8 +108,9 @@ class BufferPoolMgr {
 	 * @return the pinned buffer
 	 */
 	Buffer pin(BlockId blk) {
-		// Only the txs acquiring the same block will be blocked
-		synchronized (prepareAnchor(blk)) {
+		//System.out.printf("Cache miss: %d , Cache hit: %d , Hit rate : %f\r",cacheMiss,cacheHit,(float)cacheHit/((float)cacheMiss+(float)cacheHit));
+		// Need to sync on BFP
+		synchronized (bufferPool) {
 			// Find existing buffer
 			Buffer buff = findExistingBuffer(blk);
 
@@ -143,60 +136,44 @@ class BufferPoolMgr {
 							minTime = bufferPool[i].blk.order();
 						}
 					}
-					
 				}
 				if(buff==null)
 					return null;
 				
-				// Get the lock of buffer if it is free
-				if (buff.getExternalLock().tryLock()) {
-					try {
-						// Swap
-						BlockId oldBlk = buff.block();
-						if (oldBlk != null)
-							blockMap.remove(oldBlk);
-						buff.assignToBlock(blk);
-						blockMap.put(blk, buff);
-						if (!buff.isPinned())
-							numAvailable.decrementAndGet();
-						
-						// Pin this buffer
-						buff.pin();
-						
-						// Check if this blockId is new
-						if(blk.hist[BlockId.LRU_K-1]==0)
-							blk.updateHistM();
-						
-						return buff;
-						
-					} finally {
-						// Release the lock of buffer
-						buff.getExternalLock().unlock();
-					}
-				}
-				return null;
+				// Swap
+				BlockId oldBlk = buff.block();
+				if (oldBlk != null)
+					blockMap.remove(oldBlk);
+				buff.assignToBlock(blk);
+				blockMap.put(blk, buff);
+				if (!buff.isPinned())
+					numAvailable.decrementAndGet();
+				
+				// Pin this buffer
+				buff.pin();
+				
+				// Check if this blockId is new
+				if(blk.hist[BlockId.LRU_K-1]==0)
+					blk.updateHistM();
+				
+				// CacheMiss
+				//cacheMiss++;
+				
+				return buff;
 			}
 			// If it exists
 			else {
-				// Get the lock of buffer
-				buff.getExternalLock().lock();
-				
-				try {
-					// Check its block id before pinning since it might be swapped
-					if (buff.block().equals(blk)) {
-						if (!buff.isPinned()) {
-							numAvailable.decrementAndGet();
-						}
-						buff.pin();
-						buff.blk.updateHist();
-						return buff;
+				if (buff.block().equals(blk)) {
+					if (!buff.isPinned()) {
+						numAvailable.decrementAndGet();
 					}
-					return pin(blk);
-					
-				} finally {
-					// Release the lock of buffer
-					buff.getExternalLock().unlock();
+					buff.pin();
+					buff.blk.updateHist();
+					// CacheHit
+					//cacheHit++;
+					return buff;
 				}
+				return pin(blk);
 			}
 		}
 	}
@@ -214,7 +191,7 @@ class BufferPoolMgr {
 	 */
 	Buffer pinNew(String fileName, PageFormatter fmtr) {
 		// Only the txs acquiring to append the block on the same file will be blocked
-		synchronized (prepareAnchor(fileName)) {
+		synchronized (bufferPool) {
 			Buffer buff=null;
 			// Try to find replaceable buffer
 			long nowTime = System.nanoTime();
@@ -238,29 +215,21 @@ class BufferPoolMgr {
 			}
 			if(buff==null)
 				return null;
-				// Get the lock of buffer if it is free
-				if (buff.getExternalLock().tryLock()) {
-					try {
-						// Swap
-						BlockId oldBlk = buff.block();
-						if (oldBlk != null)
-							blockMap.remove(oldBlk);
-						buff.assignToNew(fileName, fmtr);
-						blockMap.put(buff.block(), buff);
-						if (!buff.isPinned())
-							numAvailable.decrementAndGet();
-						
-						// Pin this buffer
-						buff.pin();
-						buff.blk.updateHistM();
-						return buff;
-					} finally {
-						// Release the lock of buffer
-						buff.getExternalLock().unlock();
-					}
-				}
+				
+			// Swap
+			BlockId oldBlk = buff.block();
+			if (oldBlk != null)
+				blockMap.remove(oldBlk);
+			buff.assignToNew(fileName, fmtr);
+			blockMap.put(buff.block(), buff);
+			if (!buff.isPinned())
+				numAvailable.decrementAndGet();
+			
+			// Pin this buffer
+			buff.pin();
+			buff.blk.updateHistM();
+			return buff;
 			}
-			return null;
 		}
 
 
@@ -271,18 +240,14 @@ class BufferPoolMgr {
 	 *            the buffers to be unpinned
 	 */
 	void unpin(Buffer... buffs) {
-		for (Buffer buff : buffs) {
-			try {
-				// Get the lock of buffer
-				buff.getExternalLock().lock();
+		synchronized(bufferPool)
+		{
+			for (Buffer buff : buffs) {
 				buff.unpin();
 				if (!buff.isPinned())
 				{
 					numAvailable.incrementAndGet();
 				}
-			} finally {
-				// Release the lock of buffer
-				buff.getExternalLock().unlock();
 			}
 		}
 	}
