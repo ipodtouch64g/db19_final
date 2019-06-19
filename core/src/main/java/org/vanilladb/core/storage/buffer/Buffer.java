@@ -29,6 +29,7 @@ import org.vanilladb.core.sql.Type;
 import org.vanilladb.core.storage.file.BlockId;
 import org.vanilladb.core.storage.file.Page;
 import org.vanilladb.core.storage.log.LogSeqNum;
+import org.vanilladb.core.util.CoreProperties;
 
 /**
  * An individual buffer. A buffer wraps a page and stores information about its
@@ -48,6 +49,11 @@ public class Buffer {
 	
 	private static final int LAST_LSN_OFFSET = 0;
 	private static final int DATA_START_OFFSET = LogSeqNum.SIZE;
+	
+	public static final int FLUSH_DELAY;
+	static {
+		FLUSH_DELAY = CoreProperties.getLoader().getPropertyAsInteger(Buffer.class.getName() + ".FLUSH_DELAY", 0);
+	}
 	
 	public Page contents = new Page();
 	public BlockId blk = null;
@@ -204,9 +210,18 @@ public class Buffer {
 	 * ensures that the corresponding log record has been written to disk prior
 	 * to writing the page to disk.
 	 */
+	// delay the fuk out of this.
 	void flush() {
 		internalLock.writeLock().lock();
 		flushLock.lock();
+		try
+		{
+		    Thread.sleep(FLUSH_DELAY);
+		}
+		catch(InterruptedException ex)
+		{
+		    Thread.currentThread().interrupt();
+		}
 		try {
 			if (isNew || modifiedBy.size() > 0) {
 				VanillaDb.logMgr().flush(lastLsn);
